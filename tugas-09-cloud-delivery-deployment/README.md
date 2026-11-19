@@ -244,3 +244,70 @@ sequenceDiagram
 2. **Pencegahan Kebocoran di Cache Publik (Langkah 6–10):** API Gateway tidak pernah mencari *cache* menggunakan nomor NIK mentah, melainkan menggunakan nilai *hash* kriptografis (**HMAC-SHA256**). Jika terjadi *cache hit*, respons dikembalikan dalam milidetik tanpa membebani database inti.
 3. **Penyangga Lonjakan & Otorisasi UU PDP (Langkah 11–14):** Saat *cache miss* (misalnya pada lonjakan pembukaan rekening serentak atau pemilu), permintaan masuk ke **Antrean Terenkripsi** sebagai *buffer* agar database tidak mengalami *overload*. Sebelum menyentuh database, **IAM** di *Private Segment* memverifikasi apakah instansi pemohon memang memiliki dasar hukum/izin untuk mengakses jenis data tersebut.
 4. **Pemrosesan Terisolasi & Audit Log (Langkah 15–19):** Dekripsi *payload* dan pencocokan biometrik hanya terjadi di dalam **IaaS Private Segment** menggunakan kunci yang dikelola **HSM**. Setiap transaksi langsung direkam ke **Audit Log** yang terisolasi untuk memenuhi kewajiban akuntabilitas pengawasan data pribadi sebelum hasil biner (*cocok/tidak cocok*) dikembalikan ke Bank.
+
+
+## Bagian 3 - Analisis Risiko & Mitigasi
+ 
+Risiko pada bagian ini diturunkan langsung dari arsitektur yang dipilih di Bagian 1 dan 2: Hybrid Cloud dengan cache hasil verifikasi di public segment, API Gateway yang melayani ribuan instansi mitra, serta komponen PaaS/SaaS di public cloud. Risiko generik seperti "server mati" atau "diretas" sengaja tidak dibahas. Fokusnya pada hal yang hanya muncul karena sistem ini mengelola **data kependudukan** dan berada di bawah **UU No. 27/2022 (PDP)** serta **PP No. 71/2019 (PSTE)**.
+ 
+### 3.1 Risiko 1 - Inkonsistensi Status NIK antara Private Segment dan Cache Public Segment
+ 
+**Skenario.** Data kependudukan tidak statis. Setiap hari ada warga yang meninggal, pindah domisili, berganti status perkawinan, atau NIK-nya dinonaktifkan karena terbukti ganda. Perubahan ini dicatat di database inti (private segment), tetapi cache di public segment masih menyimpan hasil lama (`COCOK`) sampai TTL habis. Selain itu, pemutakhiran dari Dukcapil daerah sering masuk secara batch, sehingga ada jeda antara kejadian nyata dan perubahan di database inti.
+ 
+**Kenapa spesifik ke data kependudukan.** Selama jendela inkonsistensi itu, sistem bisa menyatakan NIK orang yang sudah meninggal masih valid. Akibatnya:
+- Bank bisa membuka rekening atau pinjol bisa mencairkan pinjaman atas nama warga yang sudah meninggal (penipuan identitas).
+- Pada musim pemilu, NIK yang seharusnya sudah dinonaktifkan masih lolos verifikasi pendaftaran pemilih, sehingga muncul pemilih ganda di DPT.
+- Pada PPDB, alamat lama di hasil verifikasi bisa membuat seleksi zonasi menggunakan domisili yang sudah tidak berlaku.
+**Mitigasi teknis.**
+1. **Invalidasi cache berbasis event (Change Data Capture).** Setiap perubahan status di database inti memicu event `NIK_STATUS_CHANGED`. Event hanya berisi kunci HMAC NIK (bukan NIK mentah) dan dikirim ke public segment lewat jalur privat. Gateway langsung menghapus entri cache dengan kunci tersebut, tanpa menunggu TTL habis.
+2. **Cache bypass untuk transaksi berisiko tinggi.** Permintaan KYC pembukaan rekening, pencairan kredit, dan verifikasi DPT selalu diteruskan ke private segment. Cache hanya dipakai untuk portal cek status warga yang sifatnya informatif. Ini menegaskan batasan di Bagian 1.2 bahwa cache untuk KYC boleh dimatikan.
+3. **Nomor versi data di setiap hasil.** Setiap respons membawa `data_version` (nomor urut perubahan terakhir NIK tersebut). Jika versi di cache lebih kecil dari versi terbaru yang diumumkan private segment, entri dianggap kedaluwarsa.
+4. **Rekonsiliasi berkala dan SLA pemutakhiran daerah.** Job harian membandingkan ringkasan (checksum) status NIK antara data daerah dan database inti. Selisih dilaporkan ke Dukcapil daerah yang bersangkutan untuk diselesaikan dalam batas waktu tertentu.
+### 3.2 Risiko 2 - Penyalahgunaan Akses API oleh Instansi Mitra (Enumerasi dan Harvesting Data)
+ 
+**Skenario.** Ancaman paling realistis bukan peretas dari luar, tetapi instansi mitra yang punya kredensial sah: oknum di bank, perusahaan fintech yang bekerja sama, atau kredensial mitra yang bocor dan dipakai pihak lain. API hanya mengembalikan `COCOK / TIDAK COCOK`, tetapi itu sudah cukup untuk dijadikan **oracle verifikasi**. Penyerang mengirim pasangan NIK + nama secara massal, lalu menyimpan pasangan yang `COCOK` untuk membangun basis data identitas tervalidasi.
+ 
+**Kenapa spesifik ke data kependudukan.** Struktur NIK membuat serangan ini murah. NIK terdiri dari 16 digit: 6 digit kode wilayah, 6 digit tanggal lahir (ditambah 40 untuk perempuan), dan 4 digit nomor urut. Jika penyerang tahu kecamatan dan perkiraan tanggal lahir korban, ruang tebakannya hanya puluhan ribu kombinasi. Data yang terkumpul bisa dipakai untuk pendaftaran pinjol ilegal, registrasi SIM card, atau rekayasa sosial. Selain itu, akses di luar tujuan KYC melanggar prinsip pembatasan tujuan dalam UU PDP, dan negara sebagai pengendali data ikut menanggung akibatnya.
+ 
+**Mitigasi teknis.**
+1. **Purpose binding di setiap permintaan.** Setiap permintaan wajib membawa ID referensi transaksi bisnis (misalnya nomor aplikasi pembukaan rekening) dan kode tujuan (`KYC_REKENING`, `PENYIDIKAN`, `DPT`). IAM di private segment menolak kode tujuan yang tidak sesuai izin instansi tersebut.
+2. **Token persetujuan warga untuk KYC.** Verifikasi KYC hanya diproses jika disertai token persetujuan yang diterbitkan setelah warga mengonfirmasi (misalnya lewat OTP ke nomor terdaftar). Tanpa persetujuan subjek data, bank tidak bisa memverifikasi NIK sembarang orang.
+3. **Kuota adaptif dan deteksi anomali dari audit log.** Kuota harian tiap instansi ditetapkan dari pola historisnya. Sistem deteksi anomali di private segment memantau pola khas enumerasi: rasio `TIDAK COCOK` yang tinggi, NIK berurutan dalam satu wilayah, atau lonjakan di luar jam operasional. Jika terdeteksi, kredensial instansi ditangguhkan otomatis dan Dukcapil Pusat diberi notifikasi.
+4. **Kredensial pendek umur dan terikat sertifikat.** Token OAuth2 berumur singkat dan diikat ke sertifikat mTLS instansi (certificate-bound token), sehingga token yang dicuri tidak bisa dipakai dari mesin lain. Sertifikat instansi juga dirotasi berkala.
+5. **Respons minimal tanpa petunjuk.** API tidak pernah mengembalikan field mana yang salah (misalnya "nama salah, tanggal lahir benar"). Respons hanya satu nilai biner agar penyerang tidak bisa menebak secara bertahap.
+### 3.3 Risiko 3 - Data Pribadi Keluar Wilayah Indonesia Lewat Fitur Bawaan Layanan PaaS/SaaS
+ 
+**Skenario.** Di Bagian 2, API Gateway, antrean, dan cache memakai PaaS di public cloud, sedangkan monitoring boleh memakai SaaS. Meskipun region utama di Indonesia, banyak layanan terkelola punya fitur bawaan yang diam-diam memindahkan data ke luar negeri: replikasi lintas region untuk DR, log dan metrik yang dikirim ke control plane global, CDN dengan edge di Singapura, atau akses tim support penyedia dari luar negeri. Payload NIK yang terenkripsi mungkin aman, tetapi metadata seperti log gateway, alamat IP instansi, atau ID transaksi bisa ikut terbawa.
+ 
+**Kenapa spesifik ke data kependudukan.** PP 71/2019 mewajibkan penyelenggara sistem elektronik lingkup publik memproses data di wilayah Indonesia, dan UU PDP mengatur ketat transfer data pribadi ke luar wilayah hukum Indonesia. Pelanggaran residensi bukan hanya masalah teknis. Jika terjadi kegagalan pelindungan data, UU PDP mewajibkan pemberitahuan tertulis kepada subjek data dan lembaga terkait dalam 3×24 jam, dan untuk data kependudukan subjek datanya bisa mencapai jutaan warga.
+ 
+**Mitigasi teknis.**
+1. **Policy-as-code untuk pembatasan region.** Kebijakan organisasi di akun cloud melarang pembuatan sumber daya di luar region Indonesia, menonaktifkan replikasi lintas region, dan menolak deployment yang melanggar (diperiksa otomatis di pipeline CI/CD sebelum diterapkan).
+2. **Kunci enkripsi tetap di tangan negara (Hold Your Own Key).** Semua data di public segment (antrean, cache, log) dienkripsi dengan kunci yang berasal dari HSM di private segment. Jika data tersalin ke luar region, isinya tetap tidak bisa dibaca tanpa kunci tersebut.
+3. **Tanpa CDN untuk jalur API.** API verifikasi tidak dilewatkan CDN global. Jika portal publik memakai CDN, yang di-cache hanya aset statis (HTML, CSS, gambar), bukan respons API.
+4. **Penyaringan sebelum data keluar ke SaaS.** Telemetri yang dikirim ke SaaS monitoring melewati collector di private segment yang membuang semua field identitas. Yang dikirim hanya metrik agregat (latensi, error rate) dan ID transaksi anonim.
+5. **Klausul kontrak dan audit residensi.** Perjanjian dengan penyedia cloud mencantumkan lokasi pemrosesan, larangan akses support dari luar negeri tanpa persetujuan, serta hak audit berkala. Pemindaian kepatuhan bulanan memeriksa lokasi setiap sumber daya dan tujuan aliran log.
+### 3.4 Tabel Matriks Risiko
+ 
+| No | Risiko Spesifik | Dampak Bisnis | Mitigasi Teknis |
+| :--- | :--- | :--- | :--- |
+| **1** | **Inkonsistensi status NIK** antara database inti (private) dan cache hasil verifikasi (public), misalnya warga sudah meninggal atau NIK sudah dinonaktifkan tetapi cache masih mengembalikan `COCOK`. | Rekening atau pinjaman dibuka atas nama warga yang sudah meninggal. Pemilih ganda lolos ke DPT saat pemilu. Hasil zonasi PPDB memakai domisili lama. Kepercayaan publik dan instansi terhadap data Dukcapil turun. | Invalidasi cache berbasis event (CDC) dengan kunci HMAC. Cache bypass untuk KYC, kredit, dan DPT. `data_version` di setiap respons. Rekonsiliasi harian dengan data daerah dan SLA pemutakhiran. |
+| **2** | **Penyalahgunaan API oleh instansi mitra** yang memegang kredensial sah, dipakai sebagai oracle untuk enumerasi pasangan NIK + nama. Diperparah struktur NIK yang mudah ditebak (kode wilayah + tanggal lahir). | Basis data identitas tervalidasi bocor dan dipakai untuk pinjol ilegal, registrasi SIM card, atau penipuan. Pelanggaran prinsip pembatasan tujuan UU PDP. Negara sebagai pengendali data menanggung tanggung jawab hukum dan reputasi. | Purpose binding (ID referensi + kode tujuan). Token persetujuan warga untuk KYC. Kuota adaptif dan deteksi anomali dari audit log dengan penangguhan otomatis. Token OAuth2 terikat sertifikat mTLS. Respons biner tanpa petunjuk field. |
+| **3** | **Data pribadi keluar wilayah Indonesia** lewat fitur bawaan PaaS/SaaS: replikasi lintas region, log ke control plane global, CDN luar negeri, atau akses support asing. | Pelanggaran kewajiban pemrosesan data di Indonesia (PP 71/2019) dan aturan transfer lintas batas UU PDP. Kewajiban notifikasi 3×24 jam ke jutaan warga jika terjadi kegagalan pelindungan. Sanksi administratif dan kemungkinan penghentian layanan public segment. | Policy-as-code pembatasan region dan larangan replikasi lintas region. Enkripsi dengan kunci dari HSM negara (HYOK). Tanpa CDN untuk jalur API. Collector yang membuang field identitas sebelum telemetri ke SaaS. Klausul kontrak residensi dan audit bulanan. |
+ 
+### 3.5 Penilaian Tingkat Risiko (Sebelum dan Sesudah Mitigasi)
+ 
+Skala: Kemungkinan dan Dampak masing-masing 1 (rendah) sampai 5 (sangat tinggi). Tingkat = Kemungkinan × Dampak.
+ 
+| No | Risiko | Kemungkinan (awal) | Dampak (awal) | Tingkat Awal | Tingkat Residual | Alasan Penurunan |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| 1 | Inkonsistensi status NIK | 4 | 4 | **16 (Tinggi)** | **4 (Rendah)** | Transaksi berisiko tinggi tidak lagi memakai cache, dan invalidasi event memangkas jendela inkonsistensi dari hitungan menit menjadi detik. Sisa risiko ada pada jeda pemutakhiran di tingkat daerah. |
+| 2 | Penyalahgunaan API mitra | 4 | 5 | **20 (Kritis)** | **6 (Sedang)** | Token persetujuan warga membuat enumerasi massal tidak mungkin tanpa interaksi korban. Sisa risiko ada pada oknum yang memalsukan persetujuan, dan ini ditangani lewat deteksi anomali. |
+| 3 | Data keluar wilayah Indonesia | 3 | 5 | **15 (Tinggi)** | **5 (Rendah)** | Policy-as-code mencegah salah konfigurasi sejak awal, dan HYOK membuat salinan di luar region tidak terbaca. Sisa risiko ada pada perubahan layanan sepihak dari penyedia cloud. |
+ 
+### 3.6 Narasi Mitigasi
+ 
+Ketiga risiko di atas muncul justru dari keputusan desain yang membuat Hybrid Cloud berhasil. Cache di public segment yang memberi kecepatan saat lonjakan menimbulkan risiko inkonsistensi. API Gateway yang membuka akses bagi ribuan instansi menimbulkan risiko penyalahgunaan oleh mitra. Layanan PaaS yang memberi elastisitas tanpa beban administrasi menimbulkan risiko residensi data. Karena itu mitigasinya tidak dengan membuang fitur tersebut, tetapi dengan membatasi kapan fitur itu boleh dipakai.
+ 
+Polanya konsisten dengan prinsip di Bagian 1: **keputusan yang menyangkut data selalu dibuat di private segment.** Invalidasi cache dipicu dari database inti, otorisasi tujuan dan deteksi anomali berjalan di IAM dan audit log private, dan kunci enkripsi untuk semua data di public segment berasal dari HSM negara. Public segment tetap boleh menjadi lapisan yang cepat dan elastis, tetapi tidak pernah menjadi tempat negara kehilangan kendali atas data warganya.
+ 
