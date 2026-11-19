@@ -57,7 +57,7 @@ Kami merekomendasikan **Hybrid Cloud** untuk Sistem Data Kependudukan. Prinsip p
 
 Intinya, kerahasiaan dijaga dengan menempatkan data di private segment, sedangkan skalabilitas dicapai dengan menempatkan lapisan akses di public segment. Dua kebutuhan yang tampak bertentangan dalam studi kasus ini dipisahkan ke dua segmen yang berbeda.
 
-> **Dasar regulasi:** UU No. 27 Tahun 2022 (PDP) mengategorikan data biometrik sebagai data pribadi yang bersifat spesifik dengan perlindungan lebih ketat. PP No. 71 Tahun 2019 (PSTE) pada pokoknya mewajibkan penyelenggara sistem elektronik lingkup publik mengelola dan memproses sistem serta data elektroniknya di wilayah Indonesia. Karena itu public segment kami batasi pada region Indonesia** dan tidak menyimpan data inti.
+> **Dasar regulasi:** UU No. 27 Tahun 2022 (PDP) mengategorikan data biometrik sebagai data pribadi yang bersifat spesifik dengan perlindungan lebih ketat. PP No. 71 Tahun 2019 (PSTE) pada pokoknya mewajibkan penyelenggara sistem elektronik lingkup publik mengelola dan memproses sistem serta data elektroniknya di wilayah Indonesia. Karena itu **public segment kami batasi pada region Indonesia** dan tidak menyimpan data inti.
 
 ### 1.2 Batasan Data pada Public Segment
 
@@ -82,7 +82,7 @@ Dengan batasan ini, risiko pada public segment turun dari "menyimpan data pribad
 | **Broad network access** | Ribuan instansi (dukcapil daerah, kepolisian, bank) mengakses lewat satu API Gateway publik berbasis HTTPS/TLS 1.3 dan mTLS, dari berbagai jaringan dan perangkat. | Hanya gateway di public segment yang terekspos internet. Database inti tidak punya alamat publik dan hanya dapat dijangkau lewat jalur privat (VPN IPsec / koneksi dedicated). |
 | **Resource pooling** | Public segment memakai kumpulan sumber daya multi-tenant milik penyedia cloud untuk melayani beban gabungan ribuan instansi. Private segment memakai pool internal yang eksklusif untuk negara. | Multi-tenancy hanya diterima untuk lapisan yang tidak memuat data mentah. Data NIK dan biometrik tidak pernah berbagi hardware dengan tenant lain. |
 | **Rapid elasticity** | Saat musim pemilu atau pendaftaran sekolah, API Gateway dan portal verifikasi di public segment di autoscale secara horizontal, lalu diturunkan setelah lonjakan reda. Antrean dan rate limiting melindungi database inti dari banjir permintaan. | Ini inti alasan memilih Hybrid. Private cloud murni harus dibeli untuk kapasitas puncak, yang idle sebagian besar tahun. Elastisitas hanya terjadi di lapisan depan, sehingga data tidak ikut "menyebar" saat skala naik. |
-| **Measured service** | Pemakaian diukur per instansi: jumlah request API, volume verifikasi, dan latensi. Di public segment dasar penagihan pay-per-use. Di private segment metering dipakai untuk kuota, chargeback* antar-instansi, dan audit akses data pribadi. | Metering sekaligus menjadi alat kepatuhan. Setiap akses ke data warga tercatat (siapa, kapan, tujuan), yang berguna untuk pembuktian akuntabilitas sesuai UU PDP dan deteksi anomali. |
+| **Measured service** | Pemakaian diukur per instansi: jumlah request API, volume verifikasi, dan latensi. Di public segment dasar penagihan pay-per-use. Di private segment metering dipakai untuk kuota, *chargeback* antar-instansi, dan audit akses data pribadi. | Metering sekaligus menjadi alat kepatuhan. Setiap akses ke data warga tercatat (siapa, kapan, tujuan), yang berguna untuk pembuktian akuntabilitas sesuai UU PDP dan deteksi anomali. |
 
 ### 1.4 Narasi Analisis
 
@@ -91,6 +91,8 @@ Sistem kependudukan memiliki dua sifat yang saling bertentangan: data sangat sen
 **Hybrid Cloud** menyelesaikan konflik ini dengan memanfaatkan karakteristik NIST secara selektif. Resource pooling dan rapid elasticity dipakai penuh di lapisan akses yang tidak menyimpan data sensitif. Sementara itu di private segment, resource pooling dibatasi pada pool eksklusif milik negara, dan measured service diarahkan ke audit akses. Broad network access disediakan hanya lewat satu pintu terkontrol (API Gateway), sedangkan on demand self service dibatasi pada penyediaan sumber daya, bukan pemberian hak atas data. Dengan demikian, setiap karakteristik NIST tidak hanya terpenuhi, tetapi juga disesuaikan dengan tingkat sensitivitas data pada segmennya.
 
 ### 1.5 Diagram Deployment
+
+```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 55}}}%%
 flowchart TB
     subgraph EXT["PENGGUNA EKSTERNAL - ZONA TIDAK TEPERCAYA"]
@@ -146,6 +148,7 @@ flowchart TB
     class WAF,PORTAL,GW,CACHE,QUEUE pub
     class IAM,INTAPI,AUDIT,HSM,DBINTI,DBBIO,BACKUP prv
     class VPN lnk
+```
 
 **Keterangan diagram:**
 - **Biru (Public Segment):** komponen yang boleh diskalakan otomatis. Tidak menyimpan data inti, NIK, maupun biometrik. NIK hanya dilalui secara sementara dan terenkripsi, dan tidak pernah masuk log mentah.
@@ -187,7 +190,7 @@ Pemetaan ini mengikuti prinsip *Shared Responsibility Model*. Semakin dekat komp
 
 Diagram berikut menggambarkan alur pemrosesan permintaan verifikasi **KYC (Know Your Customer)** dari instansi eksternal (Bank) hingga ke database inti di *Private Segment*, termasuk titik-titik validasi keamanan, pengecekan *cache* terenkripsi HMAC, dan pencatatan audit.
 
-~~~mermaid
+```mermaid
 sequenceDiagram
     autonumber
     actor Bank as Bank (Sistem KYC)
@@ -234,7 +237,7 @@ sequenceDiagram
         GW->>Cache: Simpan Hasil Minimal (TTL Singkat, Tanpa NIK/Biometrik)
         GW-->>Bank: 200 OK (Hasil Verifikasi KYC)
     end
-~~~
+```
 
 ---
 
@@ -258,11 +261,13 @@ Risiko pada bagian ini diturunkan langsung dari arsitektur yang dipilih di Bagia
 - Bank bisa membuka rekening atau pinjol bisa mencairkan pinjaman atas nama warga yang sudah meninggal (penipuan identitas).
 - Pada musim pemilu, NIK yang seharusnya sudah dinonaktifkan masih lolos verifikasi pendaftaran pemilih, sehingga muncul pemilih ganda di DPT.
 - Pada PPDB, alamat lama di hasil verifikasi bisa membuat seleksi zonasi menggunakan domisili yang sudah tidak berlaku.
+
 **Mitigasi teknis.**
 1. **Invalidasi cache berbasis event (Change Data Capture).** Setiap perubahan status di database inti memicu event `NIK_STATUS_CHANGED`. Event hanya berisi kunci HMAC NIK (bukan NIK mentah) dan dikirim ke public segment lewat jalur privat. Gateway langsung menghapus entri cache dengan kunci tersebut, tanpa menunggu TTL habis.
 2. **Cache bypass untuk transaksi berisiko tinggi.** Permintaan KYC pembukaan rekening, pencairan kredit, dan verifikasi DPT selalu diteruskan ke private segment. Cache hanya dipakai untuk portal cek status warga yang sifatnya informatif. Ini menegaskan batasan di Bagian 1.2 bahwa cache untuk KYC boleh dimatikan.
 3. **Nomor versi data di setiap hasil.** Setiap respons membawa `data_version` (nomor urut perubahan terakhir NIK tersebut). Jika versi di cache lebih kecil dari versi terbaru yang diumumkan private segment, entri dianggap kedaluwarsa.
 4. **Rekonsiliasi berkala dan SLA pemutakhiran daerah.** Job harian membandingkan ringkasan (checksum) status NIK antara data daerah dan database inti. Selisih dilaporkan ke Dukcapil daerah yang bersangkutan untuk diselesaikan dalam batas waktu tertentu.
+
 ### 3.2 Risiko 2 - Penyalahgunaan Akses API oleh Instansi Mitra (Enumerasi dan Harvesting Data)
  
 **Skenario.** Ancaman paling realistis bukan peretas dari luar, tetapi instansi mitra yang punya kredensial sah: oknum di bank, perusahaan fintech yang bekerja sama, atau kredensial mitra yang bocor dan dipakai pihak lain. API hanya mengembalikan `COCOK / TIDAK COCOK`, tetapi itu sudah cukup untuk dijadikan **oracle verifikasi**. Penyerang mengirim pasangan NIK + nama secara massal, lalu menyimpan pasangan yang `COCOK` untuk membangun basis data identitas tervalidasi.
@@ -275,6 +280,7 @@ Risiko pada bagian ini diturunkan langsung dari arsitektur yang dipilih di Bagia
 3. **Kuota adaptif dan deteksi anomali dari audit log.** Kuota harian tiap instansi ditetapkan dari pola historisnya. Sistem deteksi anomali di private segment memantau pola khas enumerasi: rasio `TIDAK COCOK` yang tinggi, NIK berurutan dalam satu wilayah, atau lonjakan di luar jam operasional. Jika terdeteksi, kredensial instansi ditangguhkan otomatis dan Dukcapil Pusat diberi notifikasi.
 4. **Kredensial pendek umur dan terikat sertifikat.** Token OAuth2 berumur singkat dan diikat ke sertifikat mTLS instansi (certificate-bound token), sehingga token yang dicuri tidak bisa dipakai dari mesin lain. Sertifikat instansi juga dirotasi berkala.
 5. **Respons minimal tanpa petunjuk.** API tidak pernah mengembalikan field mana yang salah (misalnya "nama salah, tanggal lahir benar"). Respons hanya satu nilai biner agar penyerang tidak bisa menebak secara bertahap.
+
 ### 3.3 Risiko 3 - Data Pribadi Keluar Wilayah Indonesia Lewat Fitur Bawaan Layanan PaaS/SaaS
  
 **Skenario.** Di Bagian 2, API Gateway, antrean, dan cache memakai PaaS di public cloud, sedangkan monitoring boleh memakai SaaS. Meskipun region utama di Indonesia, banyak layanan terkelola punya fitur bawaan yang diam-diam memindahkan data ke luar negeri: replikasi lintas region untuk DR, log dan metrik yang dikirim ke control plane global, CDN dengan edge di Singapura, atau akses tim support penyedia dari luar negeri. Payload NIK yang terenkripsi mungkin aman, tetapi metadata seperti log gateway, alamat IP instansi, atau ID transaksi bisa ikut terbawa.
@@ -287,6 +293,7 @@ Risiko pada bagian ini diturunkan langsung dari arsitektur yang dipilih di Bagia
 3. **Tanpa CDN untuk jalur API.** API verifikasi tidak dilewatkan CDN global. Jika portal publik memakai CDN, yang di-cache hanya aset statis (HTML, CSS, gambar), bukan respons API.
 4. **Penyaringan sebelum data keluar ke SaaS.** Telemetri yang dikirim ke SaaS monitoring melewati collector di private segment yang membuang semua field identitas. Yang dikirim hanya metrik agregat (latensi, error rate) dan ID transaksi anonim.
 5. **Klausul kontrak dan audit residensi.** Perjanjian dengan penyedia cloud mencantumkan lokasi pemrosesan, larangan akses support dari luar negeri tanpa persetujuan, serta hak audit berkala. Pemindaian kepatuhan bulanan memeriksa lokasi setiap sumber daya dan tujuan aliran log.
+
 ### 3.4 Tabel Matriks Risiko
  
 | No | Risiko Spesifik | Dampak Bisnis | Mitigasi Teknis |
@@ -310,4 +317,176 @@ Skala: Kemungkinan dan Dampak masing-masing 1 (rendah) sampai 5 (sangat tinggi).
 Ketiga risiko di atas muncul justru dari keputusan desain yang membuat Hybrid Cloud berhasil. Cache di public segment yang memberi kecepatan saat lonjakan menimbulkan risiko inkonsistensi. API Gateway yang membuka akses bagi ribuan instansi menimbulkan risiko penyalahgunaan oleh mitra. Layanan PaaS yang memberi elastisitas tanpa beban administrasi menimbulkan risiko residensi data. Karena itu mitigasinya tidak dengan membuang fitur tersebut, tetapi dengan membatasi kapan fitur itu boleh dipakai.
  
 Polanya konsisten dengan prinsip di Bagian 1: **keputusan yang menyangkut data selalu dibuat di private segment.** Invalidasi cache dipicu dari database inti, otorisasi tujuan dan deteksi anomali berjalan di IAM dan audit log private, dan kunci enkripsi untuk semua data di public segment berasal dari HSM negara. Public segment tetap boleh menjadi lapisan yang cepat dan elastis, tetapi tidak pernah menjadi tempat negara kehilangan kendali atas data warganya.
- 
+
+## Bagian 4 - Perbandingan dengan Alternatif yang Ditolak: Private Cloud Murni
+
+Saat diskusi, kami mencoret tiga alternatif: Public Cloud murni, Private Cloud murni, dan Community Cloud (alasannya ada di `JURNAL.md`). Bagian ini membandingkan Hybrid Cloud dengan **Private Cloud murni**. Public Cloud murni tidak kami bandingkan secara rinci karena sudah gugur oleh syarat studi kasus (data harus berada di infrastruktur yang dikendalikan penuh negara) dan oleh kewajiban pemrosesan data di wilayah Indonesia. Private Cloud murni lolos semua syarat kerahasiaan, jadi alasan penolakannya harus dicari di elastisitas, biaya kapasitas, dan ketahanan terhadap serangan.
+
+Pada Private Cloud murni, semua komponen di diagram Bagian 1.5, termasuk WAF, API Gateway, portal verifikasi, antrean, dan cache, berjalan di pusat data pemerintah. Kapasitas ditentukan di muka lewat pengadaan perangkat keras, dan semua trafik dari ribuan instansi masuk langsung ke jaringan pusat data negara.
+
+
+### 4.1 Tabel Perbandingan
+
+| Aspek | Hybrid Cloud (Dipilih) | Private Cloud Murni (Ditolak) | Unggul |
+| :--- | :--- | :--- | :---: |
+| **Kendali atas NIK, biometrik, dan kunci enkripsi** | Penuh. Data inti, biometrik, HSM/KMS, dan audit log ada di private segment. | Penuh. Seluruh sistem ada di infrastruktur negara. | Imbang |
+| **Rapid elasticity saat pemilu/PPDB** | WAF, gateway, dan portal di-autoscale dalam hitungan menit, lalu diturunkan setelah lonjakan reda. | Terbatas pada kapasitas fisik yang terpasang. Menambah kapasitas berarti pengadaan perangkat keras yang makan waktu berbulan-bulan. | Hybrid |
+| **Biaya kapasitas (measured service)** | Lapisan akses dibayar sesuai pemakaian. Private segment cukup disiapkan untuk beban database yang sudah diratakan antrean. | Semua lapisan dibangun untuk beban puncak, dan sebagian besar kapasitasnya menganggur di luar musim lonjakan (lihat 4.2). | Hybrid |
+| **Ketahanan terhadap DDoS volumetrik** | Serangan diserap jaringan dan layanan DDoS protection penyedia cloud. Private segment tidak punya alamat publik, jadi uplink pusat data negara tidak bisa disasar langsung. | Serangan ditanggung uplink pusat data. Serangan ke portal publik bisa ikut memutus akses Dukcapil daerah dan kepolisian ke database inti. | Hybrid |
+| **Isolasi beban database inti** | Cache dan antrean di public segment meredam lonjakan sebelum sampai ke database (Bagian 2.2). | Gateway, portal, dan database memakai pool sumber daya yang sama, jadi lonjakan di lapisan depan ikut memakan jatah database. | Hybrid |
+| **Pembuktian kepatuhan UU PDP & PP 71/2019** | Terpenuhi, dengan syarat batasan desain di Bagian 1.2 dan kontrol residensi di Risiko 3 dijalankan. | Terpenuhi langsung dan lebih mudah dibuktikan saat audit. | Private |
+| **Kompleksitas operasional** | Lebih tinggi: dua segmen, jalur VPN, invalidasi cache, kebijakan region, dan dua kelompok keahlian. | Lebih rendah: satu lingkungan dan satu model operasi. | Private |
+| **Risiko khas** | Risiko 1 dan 3 di Bagian 3 hanya muncul karena Hybrid, tetapi keduanya punya mitigasi teknis. | Risiko 1 dan 3 tidak muncul. Sebagai gantinya, layanan bisa tumbang saat lonjakan, dan ini hanya bisa dicegah dengan membeli kapasitas puncak. | Hybrid |
+
+### 4.2 Alasan Penolakan
+
+**1. Kapasitas puncak menganggur hampir sepanjang tahun.** Angka berikut adalah asumsi sederhana, bukan data riil Dukcapil. Misalkan beban normal sistem adalah *B*, dan selama sekitar 4 minggu per tahun (pemutakhiran data pemilih, PPDB serentak) beban naik menjadi 10*B*. Supaya tidak tumbang, Private Cloud murni harus dibangun untuk 10*B*, sehingga utilisasi rata-ratanya setahun paling tinggi:
+
+```
+Utilisasi rata-rata = (48 minggu × B + 4 minggu × 10B) / (52 minggu × 10B)
+                    = 88B / 520B
+                    ≈ 17%
+```
+
+Lebih dari 80% kapasitas menganggur jika dirata-rata setahun, padahal perangkat itu tetap butuh listrik, pendinginan, lisensi, dan peremajaan. Jika kapasitas dihemat, misalnya hanya 2*B*, sekitar 80% permintaan tidak terlayani saat puncak 10*B* dan antrean penuh. Sesuai batasan di Bagian 1.2, permintaan yang kedaluwarsa di antrean dibuang, sehingga instansi menerima kegagalan pada minggu-minggu ketika verifikasi paling banyak dibutuhkan.
+
+Hybrid tetap butuh kapasitas di private segment, karena pencocokan NIK dan biometrik berjalan di sana. Yang pindah ke public segment adalah pekerjaan yang paling boros saat lonjakan: terminasi TLS/mTLS, inspeksi WAF, autentikasi, *rate limiting*, dan rendering portal. Antrean meratakan beban yang sampai ke database, sehingga private segment cukup disiapkan untuk laju keluaran antrean.
+
+**2. Lonjakan tidak selalu terjadwal.** Pemilu dan PPDB bisa diprediksi. Pendaftaran program bantuan sosial yang diumumkan mendadak, atau verifikasi ulang nasabah oleh perbankan setelah kebocoran data di sektor lain, tidak bisa. Private Cloud murni butuh siklus anggaran dan pengadaan untuk menambah kapasitas, jadi tidak bisa merespons dalam hitungan hari. Pada Hybrid, *autoscaling* di public segment merespons dalam hitungan menit.
+
+**3. Pintu internet dan database inti ada di jaringan yang sama.** Serangan DDoS volumetrik tidak perlu menembus WAF untuk merusak layanan. Penyerang cukup memenuhi kapasitas uplink pusat data. Portal publik lumpuh, dan akses Dukcapil daerah serta kepolisian yang lewat jaringan yang sama ikut terputus. Pada Hybrid, serangan ditanggung jaringan penyedia cloud yang kapasitasnya jauh lebih besar dan elastis, sedangkan private segment tidak punya alamat publik (Bagian 1.3).
+
+**4. Yang dikorbankan Hybrid.** Private Cloud murni unggul di dua baris tabel: kepatuhannya lebih mudah dibuktikan dan operasinya lebih sederhana. Tanpa public segment, Risiko 1 (inkonsistensi cache) dan Risiko 3 (data keluar wilayah lewat fitur PaaS/SaaS) di Bagian 3 juga tidak akan muncul. Kami tetap memilih Hybrid karena risikonya punya mitigasi teknis yang bisa diukur (CDC, *cache bypass*, *policy-as-code*, HYOK). Kegagalan Private Cloud murni saat lonjakan hanya bisa dicegah dengan membeli kapasitas puncak yang menganggur hampir sepanjang tahun, yaitu masalah di poin 1.
+
+### 4.3 Kondisi yang Bisa Membalik Keputusan
+
+Private Cloud murni layak dipertimbangkan ulang jika salah satu kondisi berikut terjadi:
+- **Larangan transit di public cloud.** Regulator melarang data pribadi melintas di infrastruktur public cloud dalam bentuk apa pun, termasuk terenkripsi dan sementara. Batasan di Bagian 1.2 tidak lagi cukup, dan elastisitas harus dikejar lewat kuota ketat dan antrean di dalam private cloud, dengan biaya kapasitas puncak seperti di poin 1.
+- **Pusat data pemerintah bersama yang elastis.** Pusat data bersama sanggup menyediakan kapasitas yang dipakai bergantian lintas instansi, sehingga *resource pooling* dan *rapid elasticity* didapat tanpa public cloud. Syaratnya, puncak beban instansi-instansi itu tidak terjadi bersamaan. Musim pemilu tidak memenuhi syarat ini karena menaikkan beban banyak instansi sekaligus.
+
+
+## Bagian 5 - Skenario Tandingan: Kantor Dukcapil di Daerah Tanpa Jaringan Stabil
+
+### 5.1 Skenario
+
+> **Bagaimana jika kantor Dukcapil di daerah terpencil tidak memiliki jaringan yang stabil untuk mengakses Hybrid Cloud?**
+
+Di kecamatan pedalaman atau pulau kecil, koneksi internet sering bergantung pada satu jalur, kadang satelit, dan bisa putus berjam-jam sampai berhari-hari karena cuaca atau listrik padam. Warga tetap butuh layanan: mencatat kelahiran dan kematian, mengurus pindah domisili, dan merekam biometrik KTP-el. Permintaan perekaman paling tinggi menjelang pemilu, saat pemilih pemula harus terdata, dan pada minggu yang sama pusat sedang menangani lonjakan terbesarnya.
+
+### 5.2 Asumsi Desain yang Gugur
+
+Desain di Bagian 1 dan 2 mengandalkan *broad network access*. Setiap baca dan tulis lewat API Gateway menuju private segment, dan data kependudukan hanya disimpan di private segment. Di kantor tanpa jaringan stabil, semua layanan berhenti setiap kali jalur putus.
+
+Dua solusi cepat kami tolak:
+- **Replika penuh database di kantor daerah.** Solusi ini melanggar prinsip Bagian 1 bahwa data inti dan biometrik hanya ada di private segment. Jutaan data NIK dan template biometrik akan tersimpan di server kecil dengan pengamanan fisik terbatas, sehingga pencurian satu perangkat menjadi kebocoran berskala nasional.
+- **Kembali sepenuhnya ke formulir kertas.** Data diketik ulang belakangan, rawan salah ketik dan entri ganda, dan keunikannya tidak dicek saat pencatatan. Jendela inkonsistensi (Risiko 1 di Bagian 3) melebar dari hitungan detik menjadi hitungan minggu.
+
+### 5.3 Solusi: Private Edge Node dengan Pola Offline-First
+
+Setiap kantor Dukcapil yang jaringannya buruk mendapat **Private Edge Node**, yaitu server kecil milik negara yang secara logis termasuk private segment. Desainnya mengikuti tiga aturan:
+1. Edge node hanya menyimpan data yang dibutuhkan untuk melayani warga setempat.
+2. Semua yang ditulis saat offline berstatus usulan perubahan sampai diterima pusat.
+3. Keputusan akhir atas data dibuat di private segment pusat, sesuai prinsip di Bagian 3.6.
+
+| Komponen Edge Node | Fungsi | Batasan Keamanan |
+| :--- | :--- | :--- |
+| **Snapshot data wilayah (read-only)** | Salinan NIK, nama, alamat, dan status penduduk khusus kabupaten/kecamatan setempat, dengan `data_version` per NIK. | Tanpa template biometrik. Disk dienkripsi dengan kunci dari HSM pusat. |
+| **Outbox terenkripsi (append-only)** | Menyimpan peristiwa yang dicatat saat offline (kelahiran, kematian, pindah, perubahan data). Setiap peristiwa membawa kunci idempotensi (UUID) dan `base_version`. | Peristiwa yang sudah ditulis tidak bisa diedit, hanya dibatalkan lewat peristiwa baru. |
+| **Perekaman biometrik offline** | Merekam sidik jari, iris, dan wajah untuk KTP-el. | Hasil rekaman langsung dienkripsi dengan kunci publik private segment, sehingga edge node sendiri tidak bisa membukanya. Perangkat yang dicuri tidak menghasilkan data biometrik yang terbaca. |
+| **Audit log lokal** | Mencatat setiap akses data oleh petugas. | Berantai hash (setiap entri memuat hash entri sebelumnya), sehingga penghapusan atau pengubahan terdeteksi. Disinkronkan ke Audit Log pusat. |
+| **Lease kunci** | Kunci pembuka disk berlaku untuk jangka waktu tertentu (misalnya 14 hari, nilai pastinya ditetapkan kebijakan) dan diperpanjang setiap kali sinkronisasi berhasil. | Jika lease habis saat offline, edge node terkunci. Ini membatasi berapa lama perangkat curian masih bisa dibuka. |
+| **Agen konektivitas** | Menjalankan health check berkala, memilih jalur (utama atau cadangan satelit), dan mengelola sinkronisasi. | Hanya membuat koneksi keluar. Edge node tidak membuka port ke internet. |
+
+### 5.4 Layanan per Mode Operasi
+
+| Layanan | Mode Online | Mode Degradasi (jalur cadangan satelit) | Mode Offline (edge node) |
+| :--- | :--- | :--- | :--- |
+| **Cek data penduduk wilayah setempat** | Langsung ke private segment | Langsung (payload kecil) | Dari snapshot lokal, dengan `data_version` dan umur snapshot ditampilkan |
+| **Pencatatan peristiwa (lahir, mati, pindah)** | Langsung tercatat di database inti | Langsung, didahulukan dari transfer lain | Masuk outbox dengan status SEMENTARA, warga diberi nomor registrasi sementara |
+| **Perekaman biometrik KTP-el** | Diunggah langsung | Direkam, unggahan ditunda sampai jalur utama pulih | Direkam, dienkripsi, lalu masuk outbox |
+| **Penerbitan NIK baru dan cetak KTP-el** | Normal | NIK diterbitkan normal. Cetak KTP-el menunggu deduplikasi biometrik selesai | Tidak dilayani karena butuh cek keunikan NIK dan deduplikasi biometrik di pusat |
+| **Cek data penduduk dari wilayah lain** | Normal | Normal | Tidak dilayani karena data wilayah lain tidak ada di edge node |
+
+### 5.5 Flowchart Logika Fallback
+
+```mermaid
+flowchart TD
+    MULAI(["Petugas membuka layanan<br/>di Kantor Dukcapil daerah"]) --> CEK{"Health check berkala<br/>jalur utama ke Hybrid Cloud"}
+
+    CEK -->|Stabil| ONL["MODE ONLINE<br/>Semua transaksi langsung lewat<br/>API Gateway ke Private Segment"]
+    CEK -->|Putus atau latensi tinggi| SAT{"Jalur cadangan<br/>satelit tersedia?"}
+    ONL -.->|Cek ulang berkala| CEK
+
+    SAT -->|Ya| DEG["MODE DEGRADASI<br/>Hanya transaksi teks prioritas<br/>Unggahan biometrik ditunda"]
+    SAT -->|Tidak| LEASE{"Lease kunci Edge Node<br/>masih berlaku?"}
+
+    LEASE -->|Tidak| KERTAS["FALLBACK TERAKHIR<br/>Edge Node terkunci<br/>Formulir manual bernomor seri"]
+    LEASE -->|Ya| OFF["MODE OFFLINE<br/>Layanan dari Private Edge Node"]
+
+    OFF --> JENIS{"Jenis layanan?"}
+    JENIS -->|Cek data wilayah setempat| BACA["Baca snapshot lokal<br/>Tampilkan data_version dan umur data"]
+    JENIS -->|Pencatatan peristiwa| CATAT["Simpan ke outbox terenkripsi<br/>Status SEMENTARA<br/>Nomor registrasi sementara"]
+    JENIS -->|Perekaman biometrik| BIO["Enkripsi dengan kunci publik pusat<br/>Simpan ke outbox"]
+    JENIS -->|NIK baru, cetak KTP-el,<br/>data wilayah lain| TUNDA["DITUNDA<br/>Butuh cek keunikan NIK dan<br/>deduplikasi biometrik di pusat"]
+
+    BACA --> PULIH{"Jalur utama<br/>sudah pulih?"}
+    CATAT --> PULIH
+    BIO --> PULIH
+    TUNDA --> PULIH
+    DEG --> PULIH
+    KERTAS --> PULIH
+    PULIH -->|Belum| CEK
+    PULIH -->|Sudah| SYNC["Kirim outbox berurutan<br/>Kunci idempotensi per peristiwa<br/>Lewat API Gateway, antrean, VPN"]
+
+    SYNC --> IAMCK{"IAM: sertifikat perangkat valid<br/>dan audit log lokal utuh?"}
+    IAMCK -->|Tidak| KARANTINA["KARANTINA EDGE NODE<br/>Sinkronisasi ditolak<br/>Investigasi tim keamanan"]
+    IAMCK -->|Ya| KONF{"base_version peristiwa sama dengan<br/>data_version di Database Inti?"}
+    KONF -->|Sama| COMMIT["Commit ke Database Inti<br/>Tulis Audit Log<br/>Event CDC menghapus cache publik"]
+    KONF -->|Berbeda| REVIEW["ANTREAN REVIEW MANUAL<br/>Dukcapil Pusat<br/>Tidak ditimpa otomatis"]
+    COMMIT --> DELTA["Tarik delta snapshot wilayah<br/>Perpanjang lease kunci"]
+    REVIEW --> DELTA
+    DELTA --> ONL
+
+    classDef onl fill:#eef7ee,stroke:#2e7d32,color:#103d14
+    classDef deg fill:#fff8e1,stroke:#f9a825,color:#4a3600
+    classDef off fill:#fce4ec,stroke:#ad1457,color:#4a0a24
+    classDef syn fill:#e3f2fd,stroke:#1565c0,color:#0d2b52
+    classDef stop fill:#eceff1,stroke:#546e7a,color:#263238
+    class ONL,DELTA onl
+    class DEG deg
+    class OFF,BACA,CATAT,BIO off
+    class SYNC,COMMIT syn
+    class KERTAS,TUNDA,KARANTINA,REVIEW stop
+```
+
+**Keterangan warna:**
+- **Hijau:** kondisi normal (Mode Online).
+- **Kuning:** Mode Degradasi, layanan berjalan dengan pembatasan.
+- **Merah muda:** Mode Offline, warga dilayani Private Edge Node.
+- **Biru:** sinkronisasi ke private segment pusat.
+- **Abu-abu:** layanan ditunda, ditahan untuk review, atau perangkat dikarantina.
+
+### 5.6 Penjelasan Alur Fallback
+
+1. Agen konektivitas menjalankan health check berkala ke jalur utama. Selama jalur stabil, kantor berjalan di Mode Online dan edge node hanya menerima delta snapshot.
+2. Jika jalur utama putus atau latensinya terlalu tinggi, agen mencoba jalur cadangan satelit. Jika tersedia, kantor masuk Mode Degradasi: transaksi teks tetap dikirim, unggahan biometrik ditunda.
+3. Jika tidak ada jalur sama sekali, edge node memeriksa lease kunci. Jika lease masih berlaku, kantor masuk Mode Offline. Jika lease sudah habis, edge node terkunci dan petugas memakai formulir manual bernomor seri.
+4. Di Mode Offline, cek data wilayah setempat dilayani dari snapshot, pencatatan peristiwa dan perekaman biometrik masuk outbox, sedangkan penerbitan NIK, cetak KTP-el, dan permintaan data wilayah lain ditunda.
+5. Saat jalur pulih, outbox dikirim berurutan lewat pintu yang sama dengan instansi lain: API Gateway, antrean, lalu VPN ke private segment. Payload dienkripsi di tingkat field, jadi public segment hanya melihat ciphertext (sesuai Bagian 1.2).
+6. IAM memeriksa sertifikat perangkat dan keutuhan rantai hash audit log lokal. Perangkat yang tidak dikenal atau audit log-nya rusak dikarantina, dan sinkronisasinya ditolak.
+7. Untuk setiap peristiwa, `base_version` dibandingkan dengan `data_version` di database inti. Jika sama, peristiwa di-commit, ditulis ke Audit Log, dan event CDC menghapus cache publik untuk NIK tersebut (mekanisme mitigasi Risiko 1, Bagian 3.1). Jika berbeda, peristiwa masuk antrean review manual.
+8. Edge node menarik delta snapshot terbaru, lease kunci diperpanjang, dan kantor kembali ke Mode Online. Peristiwa yang sudah di-commit berubah status dari SEMENTARA menjadi final.
+
+### 5.7 Aturan Sinkronisasi dan Konflik
+
+- **Tanpa *last-write-wins*.** Misalkan kantor daerah mencatat kematian seorang warga saat offline, sementara pusat memproses perubahan alamat warga yang sama dari permohonan pindah yang diajukan lebih dulu. Dengan aturan "yang terakhir menang", perubahan alamat yang diproses belakangan menimpa catatan kematian, dan NIK warga yang sudah meninggal kembali lolos verifikasi KYC. Karena itu setiap konflik diselesaikan manual oleh petugas Dukcapil Pusat, dengan kedua versi ditampilkan berdampingan.
+- **Idempoten.** Setiap peristiwa membawa UUID, jadi jika sinkronisasi terputus lalu diulang, peristiwa yang sudah diterima tidak tercatat dua kali.
+- **Urutan per NIK dijaga.** Peristiwa untuk NIK yang sama dikirim sesuai urutan pencatatannya, misalnya "lahir" sebelum "pindah".
+- **Prioritas saat bandwidth terbatas.** Peristiwa kematian dikirim paling awal, lalu peristiwa teks lain, baru berkas biometrik. Status kematian paling memengaruhi hasil verifikasi KYC dan DPT.
+
+### 5.8 Trade-off yang Diterima
+
+- **Data di edge node bisa basi.** Selama offline, snapshot tidak menerima perubahan dari pusat. Karena itu petugas selalu melihat umur snapshot, dan layanan yang butuh data terkini (penerbitan NIK, cetak KTP-el) tidak dilakukan offline.
+- **Jendela inkonsistensi tidak bisa nol.** Pusat baru tahu kematian yang dicatat di kantor offline setelah jalur pulih. Selama itu, bank yang memverifikasi NIK tersebut lewat API Gateway masih bisa menerima `COCOK`. Jeda ini tidak bisa dihilangkan selama kantor tidak punya jaringan, tetapi bisa dipersingkat: peristiwa kematian dikirim paling awal saat sinkronisasi, dan CDC langsung menghapus cache setelah commit.
+- **Keamanan didahulukan saat gangguan panjang.** Jika jaringan putus lebih lama dari masa lease, misalnya setelah bencana, edge node terkunci dan kantor kembali ke formulir kertas. Kami memilih ini karena perangkat berisi data penduduk satu wilayah yang lepas dari kendali pusat lebih berbahaya daripada layanan yang sementara kembali manual.
+- **Biaya perangkat dan pemeliharaan.** Edge node hanya dipasang di kantor yang jaringannya terbukti buruk, berdasarkan data latensi per instansi dari metering (Bagian 1.3).
