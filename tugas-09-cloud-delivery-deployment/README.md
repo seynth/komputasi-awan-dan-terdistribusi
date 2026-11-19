@@ -44,7 +44,7 @@ Kebijakan **Level 2 (AI Assisted Idea Generation & Structuring)** berlaku — li
 - `README.md` wajib membahas minimal satu skenario tandingan yang kalian buat sendiri (mis. "bagaimana jika instansi daerah tidak punya infrastruktur private cloud sendiri?") beserta jawabannya.
 
 
-## Bagian 1 — Rekomendasi Deployment Model & Pemetaan Karakteristik NIST
+## Bagian 1 - Rekomendasi Deployment Model & Pemetaan Karakteristik NIST
 
 ### 1.1 Rekomendasi: Hybrid Cloud dengan Pemisahan Segmen Berbasis Klasifikasi Data
 
@@ -164,3 +164,83 @@ flowchart TB
 7. API Internal mengakses database inti dan biometrik. Kunci enkripsi dikelola HSM/KMS.
 8. API Internal menulis audit log. Hasil minimal kembali lewat jalur yang sama dan boleh disimpan di cache dengan TTL singkat.
 9. Di luar alur permintaan: database direplikasi secara berkala ke backup/DR yang terisolasi.
+
+
+## Bagian 2 - Rekomendasi Service Model per Komponen Sistem
+
+Agar pemisahan tanggung jawab antara keamanan data pribadi dan skalabilitas akses berjalan efektif di atas arsitektur **Hybrid Cloud**, Sistem Data Kependudukan dipecah menjadi empat kelompok komponen utama dengan model layanan (*service model*) yang berbeda sesuai tingkat sensitivitas datanya.
+
+### 2.1 Pemetaan Komponen ke Service Model (IaaS / PaaS / SaaS)
+
+| # | Komponen Sistem | Segmen & Lokasi | Service Model | Argumen Pemilihan (Efisiensi & Keamanan) |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | **Database Inti & Biometrik** (`DB_INTI`, `DB_BIO`, `HSM/KMS`) | **Private Segment**<br>*(Pusat Data Nasional / On-Premise)* | **IaaS**<br>*(Private Infrastructure as a Service)* | **Kontrol penuh hingga level OS & enkripsi.** Data biometrik (sidik jari, iris, wajah) dan NIK adalah data spesifik menurut UU No. 27/2022 (UU PDP). Dengan IaaS di infrastruktur pemerintah, tim keamanan negara memegang kendali penuh atas *hardening* sistem operasi, partisi penyimpanan terenkripsi, konfigurasi *firewall* internal, serta manajemen kunci di HSM/KMS tanpa intervensi abstraksi pihak ketiga. |
+| **2** | **API Gateway, Antrean & Cache Verifikasi** (`API Gateway`, `Message Queue`, `Cache Minimal`) | **Public Segment**<br>*(Public Cloud Region Indonesia)* | **PaaS**<br>*(Platform as a Service)* | **Elastisitas instan tanpa beban administrasi server.** Saat lonjakan ekstrem seperti hari pemungutan suara pemilu atau PPDB serentak, layanan *managed* API Gateway dan *message broker* (PaaS) melakukan *autoscaling* otomatis dan menangani *rate limiting* maupun terminasi mTLS secara *built-in*. Negara tidak perlu memelihara *patching* OS pada lapisan gerbang yang tidak menyimpan data mentah ini. |
+| **3** | **Portal Verifikasi Publik & Layanan Internal** (`Portal Cek Status`, `API Internal Verifikasi`) | **Hybrid**<br>*(Portal di Public Segment; API Internal di Private Segment)* | **PaaS**<br>*(Managed Container / App Platform)* | **Fokus pada logika bisnis & isolasi aplikasi.** Penggunaan PaaS berbasis kontainer terkelola mempercepat *deployment* pembaruan aturan validasi NIK dan fitur *masking* log. Karena *runtime* dan *load balancer* dikelola oleh platform, tim pengembang Dukcapil cukup fokus pada keamanan kode aplikasi dan validasi skema permintaan. |
+| **4** | **Monitoring, Observability & Kolaborasi Operasional** (`SIEM Dashboard`, `Notifikasi Insiden`) | **Hybrid / Operasional**<br>*(Metadata ter-masking)* | **SaaS** *(Terbatas)* / **Self-Hosted** | **Efisiensi operasional non-data inti.** Perangkat lunak kolaborasi tiket insiden antar-instansi atau pemantauan kesehatan infrastruktur (*uptime/latency* gerbang publik) dapat memanfaatkan SaaS untuk efisiensi biaya dan kecepatan adopsi, **dengan syarat mutlak** tidak pernah menerima payload NIK, nama, atau data biometrik (hanya ID transaksi anonim dan metrik performa). |
+
+Pemetaan ini mengikuti prinsip *Shared Responsibility Model*. Semakin dekat komponen ke penyimpanan data kependudukan mentah, semakin rendah tingkat abstraksinya (**IaaS**) agar kendali negara tetap mutlak. Sebaliknya, pada lapisan terluar yang menghadapi jutaan permintaan per menit namun bersifat *stateless*, abstraksi dinaikkan ke **PaaS** demi kecepatan skala.
+
+---
+
+### 2.2 Alur Verifikasi End-to-End (Sequence Diagram)
+
+Diagram berikut menggambarkan alur pemrosesan permintaan verifikasi **KYC (Know Your Customer)** dari instansi eksternal (Bank) hingga ke database inti di *Private Segment*, termasuk titik-titik validasi keamanan, pengecekan *cache* terenkripsi HMAC, dan pencatatan audit.
+
+~~~mermaid
+sequenceDiagram
+    autonumber
+    actor Bank as Bank (Sistem KYC)
+    participant WAF as WAF & DDoS Protection<br/>(Public - PaaS)
+    participant GW as API Gateway<br/>(Public - PaaS)
+    participant Cache as Cache Minimal<br/>(Public - PaaS)
+    participant Queue as Antrean Terenkripsi<br/>(Public - PaaS)
+    participant IAM as IAM & Policy Engine<br/>(Private - IaaS)
+    participant IntAPI as API Internal Verifikasi<br/>(Private - PaaS)
+    participant DB as Database Inti & Biometrik<br/>(Private - IaaS + HSM)
+    participant Audit as Audit Log Kepatuhan<br/>(Private - IaaS)
+
+    Note over Bank,GW: Jalur Internet Publik (HTTPS TLS 1.3 + mTLS Sertifikat Instansi)
+    Bank->>WAF: POST /v1/kyc/verify<br/>(Header: Token OAuth2, Body: NIK & Foto Terenkripsi)
+    
+    WAF->>WAF: Validasi OWASP Rules & Rate Limit IP
+    alt Serangan Terdeteksi / Melebihi Kuota
+        WAF-->>Bank: 429 Too Many Requests / 403 Forbidden
+    end
+
+    WAF->>GW: Teruskan Permintaan Lolos Filter
+    GW->>GW: Validasi Sertifikat mTLS & Scope OAuth2 Bank<br/>+ Masking NIK pada Log Gateway
+    
+    GW->>Cache: Cek Hasil via Kunci HMAC-SHA256(NIK)
+    alt Cache Hit (Masih dalam TTL singkat)
+        Cache-->>GW: Status "COCOK / TIDAK COCOK" (Tanpa Data Pribadi)
+        GW-->>Bank: 200 OK (Hasil Verifikasi Minimal)
+    else Cache Miss
+        GW->>Queue: Masukkan Payload Terenkripsi (TTL Singkat)
+        Note over Queue,IAM: Batas Segmen: VPN IPsec / Dedicated Link Terenkripsi
+        Queue->>IAM: Tarik Permintaan dengan Laju Terkendali
+        IAM->>IAM: Verifikasi Hak Akses Instansi & Tujuan KYC (UU PDP)
+        
+        IAM->>IntAPI: Teruskan Permintaan Terotorisasi
+        IntAPI->>DB: Dekripsi Payload (via HSM) & Query Pencocokan NIK/Biometrik
+        DB-->>IntAPI: Boolean Hasil Pencocokan (Match / No Match)
+        
+        par Pencatatan Audit Wajib
+            IntAPI->>Audit: Catat Akses (ID Instansi, Waktu, Tujuan, Status)
+        and Pengembalian Hasil
+            IntAPI-->>GW: Kirim Hasil Minimal ("COCOK") via Jalur Privat
+        end
+        
+        GW->>Cache: Simpan Hasil Minimal (TTL Singkat, Tanpa NIK/Biometrik)
+        GW-->>Bank: 200 OK (Hasil Verifikasi KYC)
+    end
+~~~
+
+---
+
+### 2.3 Penjelasan Titik Kontrol & Validasi pada Alur
+
+1. **Validasi Perimeter & Identitas Instansi (Langkah 1–5):** Permintaan dari Bank harus melewati pemeriksaan lapisan jaringan di **WAF** dan autentikasi kriptografis dua arah (**mTLS** + token **OAuth2**) di **API Gateway (PaaS)**. Permintaan tanpa sertifikat resmi instansi terdaftar langsung ditolak di segmen publik sebelum menyentuh infrastruktur negara.
+2. **Pencegahan Kebocoran di Cache Publik (Langkah 6–10):** API Gateway tidak pernah mencari *cache* menggunakan nomor NIK mentah, melainkan menggunakan nilai *hash* kriptografis (**HMAC-SHA256**). Jika terjadi *cache hit*, respons dikembalikan dalam milidetik tanpa membebani database inti.
+3. **Penyangga Lonjakan & Otorisasi UU PDP (Langkah 11–14):** Saat *cache miss* (misalnya pada lonjakan pembukaan rekening serentak atau pemilu), permintaan masuk ke **Antrean Terenkripsi** sebagai *buffer* agar database tidak mengalami *overload*. Sebelum menyentuh database, **IAM** di *Private Segment* memverifikasi apakah instansi pemohon memang memiliki dasar hukum/izin untuk mengakses jenis data tersebut.
+4. **Pemrosesan Terisolasi & Audit Log (Langkah 15–19):** Dekripsi *payload* dan pencocokan biometrik hanya terjadi di dalam **IaaS Private Segment** menggunakan kunci yang dikelola **HSM**. Setiap transaksi langsung direkam ke **Audit Log** yang terisolasi untuk memenuhi kewajiban akuntabilitas pengawasan data pribadi sebelum hasil biner (*cocok/tidak cocok*) dikembalikan ke Bank.
